@@ -1,0 +1,53 @@
+# 数据生产流水线配置（扩展 default.yaml）
+
+# 继承基础配置
+base_config: "configs/default.yaml"
+
+# 生产规模
+production:
+  target_samples: 100000
+  filter_margin: 0.02          # 2% 退化样本余量
+  n_presets: 17000             # ceil(100000 / 6 / (1 - 0.02))
+
+# 采样策略
+sampling:
+  strategy: "lhs_stratified"   # lhs / lhs_stratified
+  seed: 42
+
+# 多条件渲染
+multi_condition:
+  conditions:
+    - {note: 48, velocity: 80,  duration_sec: 2.0, label: "C3_v80"}
+    - {note: 48, velocity: 120, duration_sec: 2.0, label: "C3_v120"}
+    - {note: 60, velocity: 80,  duration_sec: 2.0, label: "C4_v80"}
+    - {note: 60, velocity: 120, duration_sec: 2.0, label: "C4_v120"}
+    - {note: 72, velocity: 80,  duration_sec: 2.0, label: "C5_v80"}
+    - {note: 72, velocity: 120, duration_sec: 2.0, label: "C5_v120"}
+
+# 音频预处理
+preprocessing:
+  silence_threshold_db: -60.0
+  clipping_threshold: 0.99
+  clipping_ratio_limit: 0.10
+  target_peak_db: -1.0
+  target_sample_rate: 16000
+  tail_silence_threshold_db: -50.0
+  min_duration_sec: 0.5
+
+# 质量验证
+quality:
+  spectral_entropy_threshold: 1.0
+  near_duplicate_threshold: 0.999
+  pca_collapse_threshold: 0.95
+
+# 并行生产（M4 Pro 优化）
+parallel:
+  n_workers: 11                # 12 核 - 1
+  embedding_batch_size: 32
+  embedding_device: "mps"      # Metal Performance Shaders
+  checkpoint_interval: 100
+
+# 分布分析
+distribution:
+  n_pca_components: 50
+  diversity_threshold: 0.95

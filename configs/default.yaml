@@ -1,0 +1,50 @@
+# Vital 合成器参数估计系统 - 默认配置
+
+# Vital VST3 插件路径 (macOS)
+vital:
+  vst3_path: "/Library/Audio/Plug-Ins/VST3/Vital.vst3"
+  preset_dir: "/Users/jack/Music/Vital/Factory/Presets"
+
+# MIDI 渲染参数
+midi:
+  note: 60          # C4
+  velocity: 100
+  duration_sec: 2.0
+
+# 音频参数
+audio:
+  sample_rate: 44100
+  channels: 1        # 单声道
+  bit_depth: 32      # 32-bit float
+
+# 渲染设置
+render:
+  timeout_sec: 30.0
+  output_format: "wav"
+
+# MuQ 模型配置
+muq:
+  model_repo: "tencent-ailab/MuQ"
+  device: "cpu"       # cpu / mps / cuda
+  embedding_dim: 1024
+  target_sample_rate: 16000  # MuQ 要求的采样率
+
+# 实验输出
+experiment:
+  output_base: "experiments"
+  save_individual_embeddings: true
+
+# 区分能力评估阈值
+discriminator:
+  accuracy_threshold: 0.75
+  similarity_warning: 0.99
+  min_pass_count: 6
+
+# Phase 1 训练配置
+training:
+  n_samples: 10000
+  split_ratio: [0.8, 0.1, 0.1]
+  batch_size: 64
+  learning_rate: 0.001
+  epochs: 100
+  num_core_params: 45
