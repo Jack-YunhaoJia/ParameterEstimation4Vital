@@ -147,11 +147,40 @@ class EmbeddingExtractor:
             embedding = output.last_hidden_state.mean(dim=1).squeeze(0)
 
         embedding_np = embedding.cpu().numpy()
+
+        # 显式释放 GPU tensor，减少 MPS 内存压力
+        del waveform, output, embedding
         logger.debug(
             "Extracted embedding from '%s': shape %s",
             audio_path.name,
             embedding_np.shape,
         )
+        return embedding_np
+
+    def extract_waveform(self, audio_data: np.ndarray, sample_rate: int) -> np.ndarray:
+        """从已加载的音频数据提取 embedding（跳过文件 IO）。
+
+        Args:
+            audio_data: 单声道 float32 音频数据
+            sample_rate: 音频采样率
+
+        Returns:
+            embedding 向量，shape 为 (embedding_dim,)
+        """
+        if audio_data.ndim > 1:
+            audio_data = np.mean(audio_data, axis=1)
+
+        if sample_rate != self._target_sample_rate:
+            audio_data = self._resample(audio_data, sample_rate, self._target_sample_rate)
+
+        waveform = torch.tensor(audio_data, dtype=torch.float32).unsqueeze(0).to(self._device)
+
+        with torch.no_grad():
+            output = self._model(waveform, output_hidden_states=True)
+            embedding = output.last_hidden_state.mean(dim=1).squeeze(0)
+
+        embedding_np = embedding.cpu().numpy()
+        del waveform, output, embedding
         return embedding_np
 
     def extract_batch(self, audio_dir: Path) -> EmbeddingResult:
@@ -245,7 +274,7 @@ class EmbeddingExtractor:
     ) -> np.ndarray:
         """重采样音频到目标采样率。
 
-        使用 scipy 的 resample_poly 进行高质量重采样。
+        优先使用 soxr（快 5-10x），回退到 scipy resample_poly。
 
         Args:
             audio: 输入音频数据（1D float array）
@@ -255,17 +284,21 @@ class EmbeddingExtractor:
         Returns:
             重采样后的音频数据
         """
-        from math import gcd
-
         if orig_sr == target_sr:
             return audio
 
-        # 计算最简比
+        try:
+            import soxr
+            resampled = soxr.resample(audio, orig_sr, target_sr, quality="HQ")
+            return resampled.astype(np.float32)
+        except ImportError:
+            pass
+
+        from math import gcd
+        from scipy.signal import resample_poly
+
         common = gcd(orig_sr, target_sr)
         up = target_sr // common
         down = orig_sr // common
-
-        from scipy.signal import resample_poly
-
         resampled = resample_poly(audio, up, down)
         return resampled.astype(np.float32)

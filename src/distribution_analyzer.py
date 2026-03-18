@@ -56,13 +56,18 @@ class DistributionAnalyzer:
         self.diversity_threshold = diversity_threshold
 
 
-    def analyze_embeddings(self, embeddings: np.ndarray) -> dict:
+    def analyze_embeddings(
+        self, embeddings: np.ndarray, max_sim_samples: int = 10000
+    ) -> dict:
         """分析 embedding 空间分布。
 
         执行 PCA 降维和 pairwise cosine similarity 计算。
+        当样本数超过 max_sim_samples 时，随机采样子集计算 cosine similarity
+        以避免 OOM（N×N 矩阵在大数据集上不可行）。
 
         Args:
             embeddings: (N, D) embedding 矩阵
+            max_sim_samples: cosine similarity 计算的最大样本数
 
         Returns:
             包含 PCA 和 cosine similarity 分析结果的字典
@@ -77,10 +82,22 @@ class DistributionAnalyzer:
         variance_ratios = pca.explained_variance_ratio_.tolist()
         cumulative_ratios = np.cumsum(variance_ratios).tolist()
 
-        # 计算 pairwise cosine similarity，只取上三角（不含对角线）
-        sim_matrix = cosine_similarity(embeddings)
+        # 当样本数过大时，随机采样子集计算 cosine similarity
+        if n_samples > max_sim_samples:
+            rng = np.random.default_rng(42)
+            idx = rng.choice(n_samples, size=max_sim_samples, replace=False)
+            sim_embeddings = embeddings[idx]
+            logger.info(
+                "Cosine similarity 采样 %d/%d 样本计算",
+                max_sim_samples, n_samples,
+            )
+        else:
+            sim_embeddings = embeddings
+
+        n_sim = sim_embeddings.shape[0]
+        sim_matrix = cosine_similarity(sim_embeddings)
         # 提取上三角元素（不含对角线）
-        triu_indices = np.triu_indices(n_samples, k=1)
+        triu_indices = np.triu_indices(n_sim, k=1)
         sim_values = sim_matrix[triu_indices]
 
         # 计算分布统计

@@ -1,20 +1,19 @@
-# 数据生产流水线配置（扩展 default.yaml）
+# 数据扩量配置：200,000 条新数据
+# 使用新 seed 确保与旧数据不重复
 
-# 继承基础配置
 base_config: "configs/default.yaml"
 
 # 生产规模
 production:
-  target_samples: 100000
-  filter_margin: 0.02          # 2% 退化样本余量
-  n_presets: 17000             # ceil(100000 / 6 / (1 - 0.02))
+  target_samples: 200000
+  filter_margin: 0.02
 
-# 采样策略
+# 采样策略（新 seed）
 sampling:
-  strategy: "lhs_stratified"   # lhs / lhs_stratified
-  seed: 42
+  strategy: "lhs_stratified"
+  seed: 2026
 
-# 多条件渲染
+# 多条件渲染（与原配置一致）
 multi_condition:
   conditions:
     - {note: 48, velocity: 80,  duration_sec: 2.0, label: "C3_v80"}
@@ -42,9 +41,9 @@ quality:
 
 # 并行生产（M4 Pro 优化）
 parallel:
-  n_workers: 11                # 12 核 - 1
+  n_workers: 11
   embedding_batch_size: 32
-  embedding_device: "mps"      # Metal Performance Shaders
+  embedding_device: "mps"
   checkpoint_interval: 100
 
 # 分布分析

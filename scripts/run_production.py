@@ -26,6 +26,7 @@ import yaml
 
 from src.audio_preprocessor import AudioPreprocessor, PreprocessConfig
 from src.audio_renderer import AudioRenderer, RenderConfig
+from src.checkpoint_manager import CheckpointManager
 from src.distribution_analyzer import DistributionAnalyzer
 from src.multi_condition_renderer import MultiConditionRenderer, MidiCondition
 from src.parallel_producer import ParallelProducer, ProductionConfig
@@ -81,6 +82,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         choices=["cpu", "mps", "cuda"],
         help="Embedding 提取设备（覆盖配置文件）。",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="随机种子（覆盖配置文件）。",
+    )
+    parser.add_argument(
+        "--resume-from",
+        type=str,
+        default=None,
+        choices=[
+            "sampling", "rendering", "preprocessing",
+            "embedding", "validation", "saving", "analysis",
+        ],
+        help="从指定阶段恢复执行（跳过该阶段之前的所有已完成阶段）。",
+    )
+    parser.add_argument(
+        "--keep-checkpoints",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否保留历史检查点文件（使用 --no-keep-checkpoints 禁用）。",
+    )
+    parser.add_argument(
+        "--resample-workers",
+        type=int,
+        default=4,
+        help="重采样并行线程数（默认: 4）。",
     )
     parser.add_argument(
         "--yes",
@@ -148,9 +177,10 @@ def build_production_config(config: dict, args: argparse.Namespace) -> Productio
         embedding_device=args.device or parallel.get("embedding_device", "mps"),
         checkpoint_interval=parallel.get("checkpoint_interval", 100),
         sampling_strategy=sampling.get("strategy", "lhs_stratified"),
-        seed=sampling.get("seed", 42),
+        seed=args.seed if args.seed is not None else sampling.get("seed", 42),
         filter_margin=prod.get("filter_margin", 0.02),
         n_conditions=len(config.get("multi_condition", {}).get("conditions", [])) or 6,
+        resample_workers=args.resample_workers,
     )
 
 
@@ -220,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         validator = QualityValidator(
             silence_threshold_db=preprocess_cfg.get("silence_threshold_db", -60.0),
             clipping_ratio_limit=preprocess_cfg.get("clipping_ratio_limit", 0.10),
-            spectral_entropy_threshold=quality_cfg.get("spectral_entropy_threshold", 1.0),
+            spectral_entropy_threshold=quality_cfg.get("spectral_entropy_threshold", 0.05),
             near_duplicate_threshold=quality_cfg.get("near_duplicate_threshold", 0.999),
             pca_collapse_threshold=quality_cfg.get("pca_collapse_threshold", 0.95),
         )
@@ -228,6 +258,12 @@ def main(argv: list[str] | None = None) -> int:
         dist_cfg = config.get("distribution", {})
         analyzer = DistributionAnalyzer(
             diversity_threshold=dist_cfg.get("diversity_threshold", 0.95),
+        )
+
+        # Create CheckpointManager
+        checkpoint_manager = CheckpointManager(
+            output_dir,
+            keep_checkpoints=args.keep_checkpoints,
         )
 
         # Create ParallelProducer
@@ -238,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
             sampler=sampler,
             validator=validator,
             analyzer=analyzer,
+            checkpoint_manager=checkpoint_manager,
         )
 
         # Print resource estimate and wait for confirmation
@@ -254,7 +291,11 @@ def main(argv: list[str] | None = None) -> int:
 
         # Run production
         logger.info("开始数据生产...")
-        summary = producer.produce(output_dir, resume=args.resume)
+        summary = producer.produce(
+            output_dir,
+            resume=args.resume,
+            resume_from=args.resume_from,
+        )
 
         # Print summary
         print("\n" + "=" * 60)

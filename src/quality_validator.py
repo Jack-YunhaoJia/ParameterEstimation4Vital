@@ -59,7 +59,7 @@ class QualityValidator:
         self,
         silence_threshold_db: float = -60.0,
         clipping_ratio_limit: float = 0.10,
-        spectral_entropy_threshold: float = 1.0,
+        spectral_entropy_threshold: float = 0.05,
         near_duplicate_threshold: float = 0.999,
         pca_collapse_threshold: float = 0.95,
     ) -> None:
@@ -217,15 +217,20 @@ class QualityValidator:
         )
 
     def detect_near_duplicates(
-        self, embeddings: np.ndarray, threshold: float | None = None
+        self,
+        embeddings: np.ndarray,
+        threshold: float | None = None,
+        max_samples: int = 10000,
     ) -> int:
         """检测近重复样本对数量。
 
         计算 pairwise cosine similarity，返回超过阈值的样本对数。
+        当样本数超过 max_samples 时，随机采样子集以避免 OOM。
 
         Args:
             embeddings: (N, D) embedding 矩阵
             threshold: cosine similarity 阈值，None 时使用实例默认值
+            max_samples: 最大计算样本数
 
         Returns:
             超过阈值的样本对数量。
@@ -237,15 +242,20 @@ class QualityValidator:
         if n < 2:
             return 0
 
+        # 当样本数过大时，随机采样子集
+        if n > max_samples:
+            rng = np.random.default_rng(42)
+            idx = rng.choice(n, size=max_samples, replace=False)
+            embeddings = embeddings[idx]
+            n = max_samples
+
         # 计算 pairwise cosine similarity
         sim_matrix = cosine_similarity(embeddings)
 
         # 只统计上三角（不含对角线），避免重复计数
-        count = 0
-        for i in range(n):
-            for j in range(i + 1, n):
-                if sim_matrix[i, j] > threshold:
-                    count += 1
+        triu_indices = np.triu_indices(n, k=1)
+        sim_values = sim_matrix[triu_indices]
+        count = int(np.sum(sim_values > threshold))
 
         return count
 

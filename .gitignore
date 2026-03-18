@@ -23,11 +23,7 @@ build/
 .pytest_cache/
 
 # Production data (large files - upload separately)
-experiments/production_run/audio/
-experiments/production_run/presets/
-experiments/production_run/production_dataset.h5
-experiments/production_run/production.log
-experiments/production_run/checkpoint.json
+experiments/
 
 # Generated artifacts
 vital_param_inventory.json
@@ -35,3 +31,18 @@ vital_param_inventory.json
 # General
 *.wav
 *.h5
+
+# Hypothesis (property-based testing cache)
+.hypothesis/
+
+# Kiro IDE
+.kiro/
+
+# Tests
+tests/
+
+# Debug / one-off scripts
+scripts/debug_render_test.py
+scripts/test_which_params_set.py
+scripts/resume_from_validation.py
+scripts/resume_from_embedding.py
