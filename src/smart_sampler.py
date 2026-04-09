@@ -70,8 +70,8 @@ class SmartSampler:
     def sample_lhs(self, n: int) -> np.ndarray:
         """使用拉丁超立方采样生成 n 个参数向量。
 
-        连续参数使用 LHS，离散参数（filter_model, filter_style）
-        使用均匀离散采样后取整，效果器开关四舍五入为 0/1。
+        连续参数使用 LHS 确保边际分布均匀，离散参数（filter_model,
+        filter_style）取整，效果器开关四舍五入为 0/1。
 
         Args:
             n: 采样数量
@@ -79,16 +79,16 @@ class SmartSampler:
         Returns:
             (n, 45) 参数矩阵，float32
         """
-        # LHS generates samples in [0, 1]^d
+        # LHS 在 [0, 1]^d 上生成均匀分布样本
         sampler = LatinHypercube(d=NUM_PARAMS, seed=self.seed)
         unit_samples = sampler.random(n=n)  # (n, 45) in [0, 1]
 
-        # Scale to parameter ranges
+        # 缩放到各参数的物理值域
         params = np.empty((n, NUM_PARAMS), dtype=np.float32)
         for col, (name, lo, hi) in enumerate(CORE_PARAMS):
             params[:, col] = lo + unit_samples[:, col] * (hi - lo)
 
-        # Post-process discrete parameters
+        # 离散参数后处理（取整 + 截断）
         self._discretize_params(params)
 
         return params
@@ -108,20 +108,20 @@ class SmartSampler:
         rng = np.random.default_rng(self.seed)
         num_switches = len(EFFECT_SWITCH_INDICES)  # 9
 
-        # Compute layer sizes proportional to C(9, k)
+        # 按 C(9, k) 比例计算每层样本数
         total_combinations = sum(math.comb(num_switches, k) for k in range(num_switches + 1))
         layer_sizes = []
         allocated = 0
         for k in range(num_switches + 1):
             if k == num_switches:
-                # Last layer gets the remainder to ensure exact total
+                # 最后一层取剩余部分，确保总数精确
                 layer_sizes.append(n - allocated)
             else:
                 size = round(n * math.comb(num_switches, k) / total_combinations)
                 layer_sizes.append(size)
                 allocated += size
 
-        # Generate LHS samples for continuous parameters
+        # 连续参数仍使用 LHS 采样
         sampler = LatinHypercube(d=NUM_PARAMS, seed=self.seed)
         unit_samples = sampler.random(n=n)  # (n, 45) in [0, 1]
 
@@ -129,17 +129,17 @@ class SmartSampler:
         for col, (name, lo, hi) in enumerate(CORE_PARAMS):
             params[:, col] = lo + unit_samples[:, col] * (hi - lo)
 
-        # Post-process discrete parameters (filter_model, filter_style)
+        # 离散参数后处理（filter_model, filter_style）
         params[:, _FILTER_MODEL_INDEX] = np.floor(params[:, _FILTER_MODEL_INDEX]).clip(0, 5).astype(np.float32)
         params[:, _FILTER_STYLE_INDEX] = np.floor(params[:, _FILTER_STYLE_INDEX]).clip(0, 3).astype(np.float32)
 
-        # Assign effect switches by stratified layers
+        # 按分层策略分配效果器开关组合
         row = 0
         for k, layer_n in enumerate(layer_sizes):
             if layer_n <= 0:
                 continue
             for _ in range(layer_n):
-                # Generate a random switch combination with exactly k active switches
+                # 随机选择 k 个效果器开启
                 switch_values = np.zeros(num_switches, dtype=np.float32)
                 if k > 0:
                     active_indices = rng.choice(num_switches, size=k, replace=False)
@@ -194,7 +194,7 @@ class SmartSampler:
             ks_stats[name] = float(stat)
             ks_pvalues[name] = float(pvalue)
 
-        # Effect switch distribution: count by number of active switches
+        # 效果器开关分布统计：按活跃效果器数量分组
         switch_matrix = params[:, EFFECT_SWITCH_INDICES]  # (n, 9)
         active_counts = switch_matrix.sum(axis=1).astype(int)  # (n,)
         distribution: dict[int, int] = {}
@@ -214,13 +214,13 @@ class SmartSampler:
 
     @staticmethod
     def _discretize_params(params: np.ndarray) -> None:
-        """Post-process discrete parameters in-place.
+        """原地离散化参数。
 
-        - Effect switches: round to 0 or 1
-        - filter_1_model: round to integers in {0, 1, 2, 3, 4, 5}
-        - filter_1_style: round to integers in {0, 1, 2, 3}
+        - 效果器开关：四舍五入为 0 或 1
+        - filter_1_model：取整到 {0, 1, 2, 3, 4, 5}
+        - filter_1_style：取整到 {0, 1, 2, 3}
         """
-        # Effect switches → binary 0/1
+        # 效果器开关 → 二值 0/1
         for idx in EFFECT_SWITCH_INDICES:
             params[:, idx] = np.round(params[:, idx]).clip(0, 1)
 

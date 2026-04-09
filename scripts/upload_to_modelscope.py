@@ -25,7 +25,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
+import shutil
 from pathlib import Path
+
+# ModelScope 非 LFS 文件总大小限制约 500MB，留余量用 450MB
+BATCH_SIZE_LIMIT_MB = 450
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -168,6 +173,69 @@ def do_login(token: str | None = None) -> None:
         print("✅ 登录成功")
 
 
+def _upload_dir_in_batches(
+    api,
+    repo_id: str,
+    source_dir: Path,
+    path_in_repo: str,
+    pattern: str,
+    commit_msg: str,
+) -> None:
+    """将大目录分批上传，每批不超过 BATCH_SIZE_LIMIT_MB。"""
+    all_files = sorted(source_dir.glob(pattern))
+    if not all_files:
+        print(f"  ⚠️  {source_dir.name}/ 目录为空，跳过")
+        return
+
+    total_size_mb = sum(f.stat().st_size for f in all_files) / 1024 / 1024
+    print(f"  📦 {path_in_repo}/ 目录: {len(all_files):,} 个文件, {total_size_mb:.0f} MB")
+
+    # 按大小分批
+    batches: list[list[Path]] = []
+    current_batch: list[Path] = []
+    current_size = 0
+    limit = BATCH_SIZE_LIMIT_MB * 1024 * 1024
+
+    for f in all_files:
+        fsize = f.stat().st_size
+        if current_batch and current_size + fsize > limit:
+            batches.append(current_batch)
+            current_batch = []
+            current_size = 0
+        current_batch.append(f)
+        current_size += fsize
+
+    if current_batch:
+        batches.append(current_batch)
+
+    print(f"  分 {len(batches)} 批上传...")
+
+    for i, batch in enumerate(batches, 1):
+        batch_size_mb = sum(f.stat().st_size for f in batch) / 1024 / 1024
+        print(f"  [{i}/{len(batches)}] {len(batch):,} 个文件 ({batch_size_mb:.0f} MB)...")
+
+        # 创建临时目录，硬链接本批文件（同一文件系统下不占额外空间）
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            for f in batch:
+                dest = tmp_path / f.name
+                try:
+                    dest.hardlink_to(f)
+                except OSError:
+                    # 跨文件系统时回退到拷贝
+                    shutil.copy2(f, dest)
+
+            api.upload_folder(
+                repo_id=repo_id,
+                folder_path=str(tmp_path),
+                path_in_repo=path_in_repo,
+                commit_message=f"{commit_msg} (batch {i}/{len(batches)})",
+                repo_type="dataset",
+            )
+
+    print(f"  ✅ {path_in_repo}/ 上传完成")
+
+
 def upload(args: argparse.Namespace) -> int:
     """执行上传。"""
     output_dir = Path(args.output_dir)
@@ -240,32 +308,20 @@ def upload(args: argparse.Namespace) -> int:
             commit_message=commit_msg,
         )
 
-    # 上传 audio 目录
+    # 上传 audio 目录（分批）
     if args.include_audio:
         audio_dir = output_dir / "audio"
         if audio_dir.exists():
-            print(f"  上传 audio/ 目录...")
-            api.upload_folder(
-                repo_id=repo_id,
-                folder_path=str(audio_dir),
-                path_in_repo="audio",
-                commit_message=commit_msg,
-                repo_type="dataset",
-                allow_patterns="*.wav",
+            _upload_dir_in_batches(
+                api, repo_id, audio_dir, "audio", "*.wav", commit_msg,
             )
 
-    # 上传 presets 目录
+    # 上传 presets 目录（分批）
     if args.include_presets:
         presets_dir = output_dir / "presets"
         if presets_dir.exists():
-            print(f"  上传 presets/ 目录...")
-            api.upload_folder(
-                repo_id=repo_id,
-                folder_path=str(presets_dir),
-                path_in_repo="presets",
-                commit_message=commit_msg,
-                repo_type="dataset",
-                allow_patterns="*.vital",
+            _upload_dir_in_batches(
+                api, repo_id, presets_dir, "presets", "*.vital", commit_msg,
             )
 
     print(f"\n✅ 上传完成！查看: https://modelscope.cn/datasets/{repo_id}")

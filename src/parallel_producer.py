@@ -89,6 +89,11 @@ class ProductionConfig:
     max_retries: int = 10  # 重试循环上限
     safety_margin: float = 0.02  # 动态过滤率安全余量
     resample_workers: int = 4  # 重采样并行线程数
+    adaptive_rendering: bool = False  # 是否启用自适应渲染
+    sustain_margin: float = 0.2
+    tail_margin: float = 0.1
+    target_length_sec: float | None = None  # 输出音频统一长度
+    max_duration_sec: float = 30.0
 
 
 @dataclass
@@ -788,6 +793,40 @@ class ParallelProducer:
                 next_preset_index = saved_retry.get("next_preset_index", n_presets)
                 cumulative_filtered = saved_retry.get("cumulative_filtered", 0)
                 cumulative_rendered = saved_retry.get("cumulative_rendered", 0)
+
+                # 重建重试轮次的参数批次（使用相同的确定性 seed）
+                # 渲染阶段每轮重试用 seed + round_number 采样，这里重新生成以恢复 all_params_batches
+                if retry_round > 0 and next_preset_index > n_presets:
+                    logger.info("重建 %d 轮重试参数批次...", retry_round)
+                    # 从 statuses 中推断每轮的预设数量
+                    retry_preset_indices: set[int] = set()
+                    for s in statuses:
+                        if s.preset_index >= n_presets:
+                            retry_preset_indices.add(s.preset_index)
+                    # 按 preset_index 排序，按连续段分组为各轮
+                    sorted_retry_pis = sorted(retry_preset_indices)
+                    # 简单方法：逐轮重新采样
+                    offset = n_presets
+                    for rnd in range(1, retry_round + 1):
+                        # 找出属于这一轮的预设数量
+                        round_pis = [pi for pi in sorted_retry_pis if pi >= offset]
+                        if not round_pis:
+                            break
+                        # 这一轮的预设范围：offset ~ min(下一轮起始, next_preset_index)
+                        round_max = round_pis[-1] + 1
+                        n_retry = round_max - offset
+                        # 用相同 seed 重新采样
+                        original_seed = self.sampler.seed
+                        self.sampler.seed = self.config.seed + rnd
+                        retry_params = self.sampler.sample(
+                            n_retry, strategy=self.config.sampling_strategy,
+                        )
+                        self.sampler.seed = original_seed
+                        all_params_batches.append(retry_params)
+                        # 从 sorted_retry_pis 中移除已处理的
+                        sorted_retry_pis = [pi for pi in sorted_retry_pis if pi >= round_max]
+                        offset = round_max
+
             except Exception as e:
                 logger.error("加载 rendering 检查点失败: %s", e)
                 raise
@@ -801,6 +840,8 @@ class ParallelProducer:
         if _should_execute("preprocessing"):
             logger.info("阶段 3：音频预处理")
 
+            n_preprocessed = 0
+            n_render_passed = sum(1 for s in statuses if s.status == "render_passed")
             for s in statuses:
                 if s.status != "render_passed":
                     continue
@@ -814,7 +855,8 @@ class ParallelProducer:
                     if audio_data.ndim > 1:
                         audio_data = audio_data[:, 0]
                     result = self.preprocessor.process(audio_data, sr)
-                    preprocess_results[s.sample_id] = result
+                    del audio_data  # 释放原始音频内存
+
                     # 预处理阶段不再过滤（已在渲染后过滤），直接标记为 preprocessed
                     if result.is_filtered:
                         # 极少数情况：预处理器可能因其他原因过滤
@@ -823,28 +865,33 @@ class ParallelProducer:
                         reason = result.filter_reason or "unknown"
                         filter_reasons[reason] = filter_reasons.get(reason, 0) + 1
                     else:
+                        # 将处理后的音频写回磁盘，然后释放内存
+                        if result.audio is not None:
+                            sf.write(str(audio_path), result.audio, result.sample_rate)
                         s.status = "preprocessed"
+
+                    # 只保留统计信息，释放音频数据内存
+                    from types import SimpleNamespace
+                    preprocess_results[s.sample_id] = SimpleNamespace(
+                        audio=None,
+                        original_rms_db=result.original_rms_db,
+                        clipping_ratio=result.clipping_ratio,
+                        is_filtered=result.is_filtered,
+                        filter_reason=result.filter_reason,
+                        sample_rate=result.sample_rate,
+                    )
+                    del result  # 释放 PreprocessResult（含音频数据）
+
+                    n_preprocessed += 1
+                    if n_preprocessed % 10000 == 0:
+                        logger.info("预处理进度: %d / %d", n_preprocessed, n_render_passed)
                 except Exception as e:
                     logger.error("预处理失败 %s: %s", s.sample_id, e)
                     s.status = "failed"
                     s.error = str(e)
 
-            # 批量重采样 render_passed 音频文件
-            render_passed_paths = [
-                audio_dir / f"{s.sample_id}.wav"
-                for s in statuses
-                if s.status == "preprocessed"
-            ]
-            if render_passed_paths:
-                try:
-                    resampler = BatchResampler(
-                        orig_sr=44100,
-                        target_sr=16000,
-                        n_workers=self.config.resample_workers,
-                    )
-                    resampler.resample_files(render_passed_paths)
-                except Exception as e:
-                    logger.warning("批量重采样失败: %s", e)
+            # 预处理已将音频写回磁盘（DC消除+归一化），跳过批量重采样
+            # （重采样已在 preprocessor.process() 中完成）
 
             self._save_checkpoint(statuses, checkpoint_path)
             phase_timings["preprocessing"] = time.time() - t0
@@ -934,13 +981,19 @@ class ParallelProducer:
                 missing_paths = [audio_dir / f"{sid}.wav" for sid in missing_ids]
                 batch_size = self.config.embedding_batch_size
 
+                # 预加载模型，避免每批次重复加载
+                from src.embedding_extractor import EmbeddingExtractor
+                extractor = EmbeddingExtractor(
+                    device=self.config.embedding_device
+                )
+
                 # 按批次提取并保存
                 for batch_start in range(0, len(missing_paths), batch_size):
                     batch_end = min(batch_start + batch_size, len(missing_paths))
                     batch_paths = missing_paths[batch_start:batch_end]
                     batch_ids = missing_ids[batch_start:batch_end]
 
-                    batch_emb = self.extract_embeddings_batch(batch_paths)
+                    batch_emb = self.extract_embeddings_batch(batch_paths, extractor=extractor)
 
                     try:
                         if self.checkpoint_manager:
@@ -1464,6 +1517,7 @@ class ParallelProducer:
     def _render_worker(
         tasks: list[tuple[Path, Path, str, int, int, float]],
         vital_vst_path: Path,
+        adaptive_config_dict: dict | None = None,
     ) -> list[tuple[str, bool, str | None]]:
         """渲染 worker 进程函数。
 
@@ -1473,6 +1527,7 @@ class ParallelProducer:
         Args:
             tasks: [(preset_path, output_path, sample_id, midi_note, velocity, duration_sec), ...]
             vital_vst_path: VST3 插件路径
+            adaptive_config_dict: 自适应渲染配置字典（None 表示固定时长模式）
 
         Returns:
             [(sample_id, success, error_msg), ...]
@@ -1492,16 +1547,54 @@ class ParallelProducer:
                 results.append((task[2], False, f"VST3 加载失败: {e}"))
             return results
 
+        # 创建自适应时序计算器（如果启用）
+        timing_calculator = None
+        if adaptive_config_dict is not None:
+            from src.adaptive_timing import AdaptiveConfig, AdaptiveTimingCalculator
+
+            adaptive_cfg = AdaptiveConfig(
+                sustain_margin=adaptive_config_dict["sustain_margin"],
+                tail_margin=adaptive_config_dict["tail_margin"],
+                target_length_sec=adaptive_config_dict.get("target_length_sec"),
+                max_duration=adaptive_config_dict["max_duration_sec"],
+            )
+            timing_calculator = AdaptiveTimingCalculator(adaptive_cfg)
+
+        # 缓存每个 preset 的时序（同一 preset 多条件共享）
+        timing_cache: dict[str, Any] = {}
+
         # 逐个渲染任务，每个任务使用对应的 MIDI 条件
         for preset_path, output_path, sample_id, midi_note, velocity, duration_sec in tasks:
             try:
                 # 更新渲染配置为当前任务的 MIDI 条件
                 renderer._config.midi_note = midi_note
                 renderer._config.velocity = velocity
-                renderer._config.duration_sec = duration_sec
+
+                note_off_time = None
+                target_length_samples = None
+
+                if timing_calculator is not None:
+                    preset_key = str(preset_path)
+                    if preset_key not in timing_cache:
+                        timing_cache[preset_key] = timing_calculator.compute_timing(
+                            Path(preset_path)
+                        )
+                    timing = timing_cache[preset_key]
+                    renderer._config.duration_sec = timing.total_duration
+                    note_off_time = timing.note_off
+                    if adaptive_config_dict and adaptive_config_dict.get("target_length_sec") is not None:
+                        target_length_samples = int(
+                            adaptive_config_dict["target_length_sec"]
+                            * renderer._config.sample_rate
+                        )
+                else:
+                    renderer._config.duration_sec = duration_sec
 
                 success = renderer.render_preset(
-                    Path(preset_path), Path(output_path)
+                    Path(preset_path),
+                    Path(output_path),
+                    note_off_time=note_off_time,
+                    target_length_samples=target_length_samples,
                 )
                 if success:
                     results.append((sample_id, True, None))
@@ -1548,11 +1641,21 @@ class ParallelProducer:
             s.sample_id: s for s in statuses
         }
 
+        # 构建自适应渲染配置字典（可序列化，传递给子进程）
+        adaptive_config_dict = None
+        if self.config.adaptive_rendering:
+            adaptive_config_dict = {
+                "sustain_margin": self.config.sustain_margin,
+                "tail_margin": self.config.tail_margin,
+                "target_length_sec": self.config.target_length_sec,
+                "max_duration_sec": self.config.max_duration_sec,
+            }
+
         # 使用进程池并行渲染
         all_results: list[tuple[str, bool, str | None]] = []
         try:
             worker_args = [
-                (chunk, self.vital_vst_path) for chunk in chunks if chunk
+                (chunk, self.vital_vst_path, adaptive_config_dict) for chunk in chunks if chunk
             ]
             pool = multiprocessing.Pool(processes=len(worker_args))
             try:

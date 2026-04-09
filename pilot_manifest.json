@@ -1,0 +1,15 @@
+{
+  "scan_directory": "/Users/jack/ParameterEstimation4Vital/presets",
+  "total_found": 9,
+  "preset_paths": [
+    "/Users/jack/ParameterEstimation4Vital/presets/Ceramic.vital",
+    "/Users/jack/ParameterEstimation4Vital/presets/Chorusy Keys.vital",
+    "/Users/jack/ParameterEstimation4Vital/presets/Keystation.vital",
+    "/Users/jack/ParameterEstimation4Vital/presets/Piano from the yard sale.vital",
+    "/Users/jack/ParameterEstimation4Vital/presets/Plucked String.vital",
+    "/Users/jack/ParameterEstimation4Vital/presets/Salomon.vital",
+    "/Users/jack/ParameterEstimation4Vital/presets/Satellites.vital",
+    "/Users/jack/ParameterEstimation4Vital/presets/Smoker's Lounge.vital",
+    "/Users/jack/ParameterEstimation4Vital/presets/Super Pluck.vital"
+  ]
+}

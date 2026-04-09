@@ -169,6 +169,7 @@ def build_production_config(config: dict, args: argparse.Namespace) -> Productio
     prod = config.get("production", {})
     parallel = config.get("parallel", {})
     sampling = config.get("sampling", {})
+    adaptive = config.get("adaptive_rendering", {})
 
     return ProductionConfig(
         target_samples=args.target_samples or prod.get("target_samples", 100_000),
@@ -181,6 +182,11 @@ def build_production_config(config: dict, args: argparse.Namespace) -> Productio
         filter_margin=prod.get("filter_margin", 0.02),
         n_conditions=len(config.get("multi_condition", {}).get("conditions", [])) or 6,
         resample_workers=args.resample_workers,
+        adaptive_rendering=adaptive.get("enabled", False),
+        sustain_margin=adaptive.get("sustain_margin", 0.2),
+        tail_margin=adaptive.get("tail_margin", 0.1),
+        target_length_sec=adaptive.get("target_length_sec"),
+        max_duration_sec=adaptive.get("max_duration_sec", 30.0),
     )
 
 

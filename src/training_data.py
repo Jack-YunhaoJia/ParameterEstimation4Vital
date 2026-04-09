@@ -24,28 +24,33 @@ from src.preset_parser import VitalPreset
 logger = logging.getLogger(__name__)
 
 
-# 45 core parameters: (name, min, max)
+# ---------------------------------------------------------------------------
+# 核心参数空间定义（45 维）
+# ---------------------------------------------------------------------------
+# 每个元素为 (参数名, 最小值, 最大值)。
+# 参数值为 Vital 的物理值（非 pedalboard 归一化值）。
+# 包络时间参数 env_1_attack/decay/release 的范围是 [0, 4] 秒。
 CORE_PARAMS: list[tuple[str, float, float]] = [
-    # osc_1 core (6)
-    ("osc_1_level", 0.0, 1.0),
-    ("osc_1_transpose", -48.0, 48.0),
-    ("osc_1_tune", -1.0, 1.0),
-    ("osc_1_wave_frame", 0.0, 256.0),
-    ("osc_1_unison_voices", 1.0, 16.0),
-    ("osc_1_unison_detune", 0.0, 100.0),
-    # filter_1 core (6)
-    ("filter_1_cutoff", 8.0, 136.0),
-    ("filter_1_resonance", 0.0, 1.0),
-    ("filter_1_drive", 0.0, 1.0),
-    ("filter_1_mix", 0.0, 1.0),
-    ("filter_1_model", 0.0, 5.0),
-    ("filter_1_style", 0.0, 3.0),
-    # env_1 ADSR (4)
-    ("env_1_attack", 0.0, 4.0),
-    ("env_1_decay", 0.0, 4.0),
-    ("env_1_sustain", 0.0, 1.0),
-    ("env_1_release", 0.0, 4.0),
-    # 9 Effect Switches
+    # ---- 振荡器 1 参数（6 个）----
+    ("osc_1_level", 0.0, 1.0),           # 振荡器音量
+    ("osc_1_transpose", -48.0, 48.0),    # 半音移调
+    ("osc_1_tune", -1.0, 1.0),           # 精细调音（半音）
+    ("osc_1_wave_frame", 0.0, 256.0),    # 波表帧位置
+    ("osc_1_unison_voices", 1.0, 16.0),  # 齐奏声部数（离散）
+    ("osc_1_unison_detune", 0.0, 100.0), # 齐奏失谐量（cents）
+    # ---- 滤波器 1 参数（6 个）----
+    ("filter_1_cutoff", 8.0, 136.0),     # 截止频率（MIDI note）
+    ("filter_1_resonance", 0.0, 1.0),    # 共振
+    ("filter_1_drive", 0.0, 1.0),        # 驱动
+    ("filter_1_mix", 0.0, 1.0),          # 干湿比
+    ("filter_1_model", 0.0, 5.0),        # 滤波器类型（离散 0-5）
+    ("filter_1_style", 0.0, 3.0),        # 滤波器风格（离散 0-3）
+    # ---- 包络 1 ADSR 参数（4 个）----
+    ("env_1_attack", 0.0, 4.0),          # 起音时间（秒）
+    ("env_1_decay", 0.0, 4.0),           # 衰减时间（秒）
+    ("env_1_sustain", 0.0, 1.0),         # 延持电平
+    ("env_1_release", 0.0, 4.0),         # 释放时间（秒）
+    # ---- 9 个效果器开关（二值 0/1）----
     ("chorus_on", 0.0, 1.0),
     ("compressor_on", 0.0, 1.0),
     ("delay_on", 0.0, 1.0),
@@ -55,7 +60,7 @@ CORE_PARAMS: list[tuple[str, float, float]] = [
     ("phaser_on", 0.0, 1.0),
     ("reverb_on", 0.0, 1.0),
     ("filter_fx_on", 0.0, 1.0),
-    # 9 dry_wet / mix params
+    # ---- 9 个效果器干湿比 / 混合参数 ----
     ("chorus_dry_wet", 0.0, 1.0),
     ("delay_dry_wet", 0.0, 1.0),
     ("flanger_dry_wet", 0.0, 1.0),
@@ -65,7 +70,7 @@ CORE_PARAMS: list[tuple[str, float, float]] = [
     ("compressor_mix", 0.0, 1.0),
     ("filter_fx_mix", 0.0, 1.0),
     ("reverb_decay_time", 0.0, 1.0),
-    # Other effect core params (7) to reach 45
+    # ---- 其他效果器核心参数（11 个，凑满 45 维）----
     ("distortion_drive", 0.0, 1.0),
     ("delay_frequency", 0.0, 10.0),
     ("chorus_frequency", 0.0, 10.0),
@@ -79,19 +84,20 @@ CORE_PARAMS: list[tuple[str, float, float]] = [
     ("eq_low_gain", -6.0, 6.0),
 ]
 
-# Names of effect switch parameters (binary 0/1)
+# 效果器开关参数名集合（二值 0/1）
 EFFECT_SWITCH_NAMES: set[str] = {
     "chorus_on", "compressor_on", "delay_on", "distortion_on",
     "eq_on", "flanger_on", "phaser_on", "reverb_on", "filter_fx_on",
 }
 
-# Indices of effect switches within CORE_PARAMS
+# 效果器开关在 CORE_PARAMS 中的索引列表
 EFFECT_SWITCH_INDICES: list[int] = [
     i for i, (name, _, _) in enumerate(CORE_PARAMS)
     if name in EFFECT_SWITCH_NAMES
 ]
 
-NUM_PARAMS = len(CORE_PARAMS)  # Should be 45
+# 核心参数总数（应为 45）
+NUM_PARAMS = len(CORE_PARAMS)
 
 
 @dataclass
@@ -117,17 +123,16 @@ def split_dataset(
     n: int,
     ratio: tuple[float, float, float] = (0.8, 0.1, 0.1),
 ) -> tuple[int, int, int]:
-    """Compute train/val/test split sizes from total count.
+    """根据总样本数计算 train/val/test 划分大小。
 
-    Ensures train + val + test == n and each size is within 1 of the
-    ideal proportion.
+    保证 train + val + test == n，每个划分大小与理想比例的误差不超过 1。
 
     Args:
-        n: Total number of samples.
-        ratio: (train, val, test) proportions summing to 1.0.
+        n: 总样本数
+        ratio: (train, val, test) 比例，三者之和应为 1.0
 
     Returns:
-        (n_train, n_val, n_test) tuple.
+        (n_train, n_val, n_test) 元组
     """
     n_test = round(n * ratio[2])
     n_val = round(n * ratio[1])
@@ -164,7 +169,7 @@ class TrainingDataGenerator:
     def sample_parameters(self, n: int) -> np.ndarray:
         """在 45 个核心参数的有效值域内均匀随机采样。
 
-        Effect switch 参数采样后四舍五入为 0.0 或 1.0（二值）。
+        效果器开关参数采样后四舍五入为 0.0 或 1.0（二值）。
 
         Args:
             n: 采样数量
@@ -177,23 +182,22 @@ class TrainingDataGenerator:
         for col, (name, lo, hi) in enumerate(CORE_PARAMS):
             params[:, col] = np.random.uniform(lo, hi, size=n)
 
-        # Round effect switches to binary 0/1
+        # 效果器开关四舍五入为二值 0/1
         for idx in EFFECT_SWITCH_INDICES:
             params[:, idx] = np.round(params[:, idx])
 
         return params
 
     def _params_to_preset(self, param_vector: np.ndarray) -> VitalPreset:
-        """Convert a single parameter vector to a VitalPreset.
+        """将单个参数向量转换为 VitalPreset 对象。
 
-        Starts from the generator's base patch and overrides the 45 core
-        parameters with the sampled values.
+        从生成器的 base patch 出发，用采样的 45 个核心参数值覆盖对应设置。
 
         Args:
-            param_vector: 1-D array of length 45.
+            param_vector: 长度为 45 的一维数组
 
         Returns:
-            VitalPreset with overridden parameters.
+            覆盖了核心参数的 VitalPreset 对象
         """
         preset = self._generator.create_base_patch()
         for i, (name, _, _) in enumerate(CORE_PARAMS):
@@ -212,26 +216,26 @@ class TrainingDataGenerator:
         test_embeddings: np.ndarray,
         metadata: DatasetMetadata,
     ) -> None:
-        """Save dataset splits and metadata to HDF5 file.
+        """将数据集划分和元数据保存为 HDF5 文件。
 
-        HDF5 structure:
+        HDF5 结构：
             train/params, train/embeddings
             val/params, val/embeddings
             test/params, test/embeddings
             metadata/param_names, metadata/param_ranges, metadata/generation_log
 
         Args:
-            output_path: Path to the .h5 output file.
-            train_params, train_embeddings: Training split arrays.
-            val_params, val_embeddings: Validation split arrays.
-            test_params, test_embeddings: Test split arrays.
-            metadata: DatasetMetadata with parameter info.
+            output_path: .h5 输出文件路径
+            train_params, train_embeddings: 训练集数组
+            val_params, val_embeddings: 验证集数组
+            test_params, test_embeddings: 测试集数组
+            metadata: 包含参数信息的 DatasetMetadata
         """
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with h5py.File(output_path, "w") as f:
-            # Data splits
+            # 写入 train/val/test 三个数据分组
             for split_name, p, e in [
                 ("train", train_params, train_embeddings),
                 ("val", val_params, val_embeddings),
@@ -241,22 +245,22 @@ class TrainingDataGenerator:
                 grp.create_dataset("params", data=p.astype(np.float32))
                 grp.create_dataset("embeddings", data=e.astype(np.float32))
 
-            # Metadata
+            # 元数据分组
             meta_grp = f.create_group("metadata")
-            # param_names as variable-length strings
+            # 参数名列表（变长字符串）
             dt = h5py.string_dtype()
             meta_grp.create_dataset(
                 "param_names",
                 data=metadata.param_names,
                 dtype=dt,
             )
-            # param_ranges as (45, 2) float32
+            # 参数范围 (45, 2) float32
             ranges = np.array(
                 [metadata.param_ranges[n] for n in metadata.param_names],
                 dtype=np.float32,
             )
             meta_grp.create_dataset("param_ranges", data=ranges)
-            # generation log as JSON string
+            # 生成日志（JSON 字符串）
             log_info = {
                 "total_samples": metadata.total_samples,
                 "failed_samples": metadata.failed_samples,
@@ -273,12 +277,12 @@ class TrainingDataGenerator:
 
     @staticmethod
     def load_hdf5(filepath: Path) -> dict:
-        """Load dataset from HDF5 file.
+        """从 HDF5 文件加载数据集。
 
         Returns:
-            Dictionary with keys: train_params, train_embeddings,
+            包含以下键的字典：train_params, train_embeddings,
             val_params, val_embeddings, test_params, test_embeddings,
-            param_names, param_ranges, generation_log.
+            param_names, param_ranges, generation_log
         """
         filepath = Path(filepath)
         result = {}
@@ -301,30 +305,29 @@ class TrainingDataGenerator:
     def generate_dataset(
         self, n_samples: int, output_dir: Path
     ) -> DatasetMetadata:
-        """Generate complete training dataset.
+        """生成完整训练数据集。
 
-        Pipeline: sample parameters → create presets → render audio →
-        extract embeddings → split 80/10/10 → save HDF5.
+        流程：采样参数 → 创建预设 → 渲染音频 → 提取 embedding
+        → 80/10/10 划分 → 保存 HDF5。
 
-        Failed samples are skipped and logged. The final dataset contains
-        no missing values.
+        失败的样本会被跳过并记录。最终数据集不含缺失值。
 
         Args:
-            n_samples: Number of parameter configurations to sample.
-            output_dir: Directory to save the HDF5 dataset file.
+            n_samples: 要采样的参数配置数量
+            output_dir: HDF5 数据集保存目录
 
         Returns:
-            DatasetMetadata with generation statistics.
+            包含生成统计信息的 DatasetMetadata
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info("Generating dataset with %d samples...", n_samples)
 
-        # Step 1: Sample parameters
+        # 步骤 1：采样参数
         all_params = self.sample_parameters(n_samples)
 
-        # Step 2-3: For each sample, create preset → render → extract embedding
+        # 步骤 2-3：逐样本创建预设 → 渲染 → 提取 embedding
         successful_params: list[np.ndarray] = []
         successful_embeddings: list[np.ndarray] = []
         failed_count = 0
@@ -383,7 +386,7 @@ class TrainingDataGenerator:
                 failed_samples=failed_count,
             )
 
-        # Stack into matrices
+        # 堆叠为矩阵
         params_matrix = np.stack(successful_params)  # (N, 45)
         embeddings_matrix = np.stack(successful_embeddings)  # (N, embed_dim)
 
@@ -394,12 +397,12 @@ class TrainingDataGenerator:
             failed_count,
         )
 
-        # Step 4: Split 80/10/10
+        # 步骤 4：80/10/10 划分
         n_train, n_val, n_test = split_dataset(
             total_successful, self.SPLIT_RATIO
         )
 
-        # Shuffle indices for random split
+        # 随机打乱索引进行划分
         indices = np.random.permutation(total_successful)
         train_idx = indices[:n_train]
         val_idx = indices[n_train : n_train + n_val]
@@ -412,7 +415,7 @@ class TrainingDataGenerator:
         test_params = params_matrix[test_idx]
         test_embeddings = embeddings_matrix[test_idx]
 
-        # Build metadata
+        # 构建元数据
         metadata = DatasetMetadata(
             param_ranges={
                 name: (lo, hi) for name, lo, hi in CORE_PARAMS
@@ -423,7 +426,7 @@ class TrainingDataGenerator:
             failed_samples=failed_count,
         )
 
-        # Step 5: Save HDF5
+        # 步骤 5：保存 HDF5
         hdf5_path = output_dir / "dataset.h5"
         self.save_hdf5(
             hdf5_path,
@@ -436,7 +439,7 @@ class TrainingDataGenerator:
             metadata,
         )
 
-        # Save metadata as JSON too for easy inspection
+        # 同时保存 JSON 格式的元数据，便于快速查看
         meta_json_path = output_dir / "metadata.json"
         meta_json = {
             "param_names": metadata.param_names,

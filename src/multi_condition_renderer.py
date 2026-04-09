@@ -12,6 +12,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.adaptive_timing import AdaptiveTimingCalculator
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,15 +72,18 @@ class MultiConditionRenderer:
         self,
         renderer,
         conditions: list[MidiCondition] | None = None,
+        timing_calculator: AdaptiveTimingCalculator | None = None,
     ) -> None:
         """初始化多条件渲染器。
 
         Args:
             renderer: 现有 AudioRenderer 实例
             conditions: MIDI 条件列表，None 时使用 DEFAULT_CONDITIONS
+            timing_calculator: 自适应时序计算器，None 表示固定时长模式
         """
         self._renderer = renderer
         self._conditions = conditions if conditions is not None else DEFAULT_CONDITIONS
+        self._timing_calculator = timing_calculator  # None = 固定时长模式
 
     @property
     def conditions(self) -> list[MidiCondition]:
@@ -116,20 +121,45 @@ class MultiConditionRenderer:
         original_velocity = self._renderer._config.velocity
         original_duration = self._renderer._config.duration_sec
 
+        # 自适应时序计算（在循环外，所有条件共享同一时序）
+        timing = None
+        if self._timing_calculator is not None:
+            timing = self._timing_calculator.compute_timing(preset_path)
+
         try:
             for condition in self._conditions:
                 try:
                     # 临时修改渲染配置
                     self._renderer._config.midi_note = condition.note
                     self._renderer._config.velocity = condition.velocity
-                    self._renderer._config.duration_sec = condition.duration_sec
+
+                    if timing is not None:
+                        # 自适应模式：使用计算的时序
+                        self._renderer._config.duration_sec = timing.total_duration
+                        note_off_time = timing.note_off
+                        target_length_samples = None
+                        if self._timing_calculator._config.target_length_sec is not None:
+                            target_length_samples = int(
+                                self._timing_calculator._config.target_length_sec
+                                * self._renderer._config.sample_rate
+                            )
+                    else:
+                        # 固定模式：使用 condition.duration_sec（向后兼容）
+                        self._renderer._config.duration_sec = condition.duration_sec
+                        note_off_time = None
+                        target_length_samples = None
 
                     # 生成输出文件路径
                     filename = f"{preset_id}_{condition.label}.wav"
                     output_path = output_dir / filename
 
                     # 调用 AudioRenderer 渲染
-                    success = self._renderer.render_preset(preset_path, output_path)
+                    success = self._renderer.render_preset(
+                        preset_path,
+                        output_path,
+                        note_off_time=note_off_time,
+                        target_length_samples=target_length_samples,
+                    )
 
                     if success:
                         result.condition_results[condition.label] = output_path

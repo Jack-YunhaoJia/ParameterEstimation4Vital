@@ -20,12 +20,12 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# 延迟导入 CORE_PARAMS 范围，用于非线性参数的归一化
+# 延迟导入 CORE_PARAMS 范围，用于非线性参数的线性归一化回退
 _CORE_PARAM_RANGES: dict[str, tuple[float, float]] | None = None
 
 
 def _get_core_param_ranges() -> dict[str, tuple[float, float]]:
-    """获取 CORE_PARAMS 的 (min, max) 范围映射。"""
+    """获取 CORE_PARAMS 的 (min, max) 范围映射（延迟加载，避免循环导入）。"""
     global _CORE_PARAM_RANGES
     if _CORE_PARAM_RANGES is None:
         from src.training_data import CORE_PARAMS
@@ -538,26 +538,30 @@ class AudioRenderer:
             preset_path.name, applied, skipped,
         )
 
-    def _generate_midi_audio(self) -> np.ndarray:
+    def _generate_midi_audio(self, note_off_time: float | None = None) -> np.ndarray:
         """生成 MIDI 事件并通过 VST 插件渲染音频。
 
         使用 pedalboard VST3Plugin 的 MIDI 合成模式：
         plugin(midi_messages, duration, sample_rate, num_channels)
 
+        Args:
+            note_off_time: 自定义 note_off 时间（秒）。
+                None 时使用 duration - 0.1（向后兼容固定时长模式）。
+
         Returns:
             渲染后的单声道音频数据，shape 为 (1, num_samples)
         """
-        # 构建 MIDI 消息：Note On at t=0, Note Off near end
+        # 构建 MIDI 消息：Note On 在 t=0，Note Off 在指定时间点
         note_on = self._create_midi_note_on(
             self._config.midi_note, self._config.velocity
         )
-        note_off_time = max(0.0, self._config.duration_sec - 0.1)
+        actual_note_off = note_off_time if note_off_time is not None else max(0.0, self._config.duration_sec - 0.1)
         note_off = self._create_midi_note_off(
-            self._config.midi_note, note_off_time
+            self._config.midi_note, actual_note_off
         )
         midi_messages = note_on + note_off
 
-        # 使用 VST3Plugin MIDI 合成模式渲染
+        # 使用 VST3Plugin MIDI 合成模式渲染音频
         rendered = self._plugin(
             midi_messages,
             duration=self._config.duration_sec,
@@ -565,7 +569,7 @@ class AudioRenderer:
             num_channels=2,
         )
 
-        # rendered shape: (num_channels, num_samples) — 转换为单声道
+        # rendered shape: (num_channels, num_samples) — 混合为单声道
         if rendered.ndim == 2 and rendered.shape[0] > 1:
             mono = np.mean(rendered, axis=0, keepdims=True)
         elif rendered.ndim == 1:
@@ -577,8 +581,10 @@ class AudioRenderer:
 
     @staticmethod
     def _create_midi_note_on(note: int, velocity: int) -> list:
-        """创建 MIDI Note On 消息。"""
-        # pedalboard 使用 (midi_bytes, timestamp_seconds) 格式
+        """创建 MIDI Note On 消息。
+
+        pedalboard 使用 (midi_bytes, timestamp_seconds) 格式。
+        """
         status = 0x90  # Note On, channel 0
         return [(bytes([status, note, velocity]), 0.0)]
 
@@ -590,23 +596,33 @@ class AudioRenderer:
             note: MIDI 音符编号
             time_sec: Note Off 时间点（秒）
         """
-        # pedalboard 使用 (midi_bytes, timestamp_seconds) 格式
         status = 0x80  # Note Off, channel 0
         return [(bytes([status, note, 0]), time_sec)]
 
-    def _write_wav(self, audio: np.ndarray, output_path: Path) -> None:
+    def _write_wav(self, audio: np.ndarray, output_path: Path,
+                  target_length_samples: int | None = None) -> None:
         """将音频数据写入 WAV 文件。
 
         Args:
             audio: 音频数据，shape 为 (1, num_samples) 或 (num_samples,)
             output_path: 输出 WAV 文件路径
+            target_length_samples: 目标采样数。不为 None 时执行 padding/truncation。
         """
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 确保 audio 是 2D: (channels, samples)
+        # 确保 audio 为 2D: (channels, samples)
         if audio.ndim == 1:
             audio = audio.reshape(1, -1)
+
+        # 长度对齐：不足则零填充，超出则截断
+        if target_length_samples is not None:
+            current = audio.shape[-1]
+            if current < target_length_samples:
+                pad = np.zeros((audio.shape[0], target_length_samples - current), dtype=audio.dtype)
+                audio = np.concatenate([audio, pad], axis=1)
+            elif current > target_length_samples:
+                audio = audio[:, :target_length_samples]
 
         from pedalboard.io import AudioFile
 
@@ -620,26 +636,31 @@ class AudioRenderer:
 
         logger.debug("Wrote WAV: %s", output_path)
 
-    def render_preset(self, preset_path: Path, output_path: Path) -> bool:
+    def render_preset(self, preset_path: Path, output_path: Path,
+                     note_off_time: float | None = None,
+                     target_length_samples: int | None = None) -> bool:
         """渲染单个预设为 WAV 文件。
 
-        加载预设到 VST 插件，生成 MIDI 事件，渲染音频，
-        输出为 44100Hz 单声道 WAV。
+        加载预设参数到 VST 插件，生成 MIDI 事件，渲染音频，
+        输出为 44100Hz 单声道 32-bit float WAV。
 
         Args:
             preset_path: .vital 预设文件路径
             output_path: 输出 WAV 文件路径
+            note_off_time: 自定义 note_off 时间（秒）。
+                None 时使用 duration - 0.1（向后兼容固定时长模式）。
+            target_length_samples: 目标采样数。不为 None 时执行零填充/截断。
 
         Returns:
-            True 如果渲染成功，False 如果失败
+            True 渲染成功，False 渲染失败
         """
         preset_path = Path(preset_path)
         output_path = Path(output_path)
 
         try:
             self._load_preset_into_plugin(preset_path)
-            audio = self._generate_midi_audio()
-            self._write_wav(audio, output_path)
+            audio = self._generate_midi_audio(note_off_time=note_off_time)
+            self._write_wav(audio, output_path, target_length_samples=target_length_samples)
             logger.info(
                 "Successfully rendered: %s -> %s",
                 preset_path.name,

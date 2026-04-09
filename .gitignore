@@ -22,27 +22,52 @@ build/
 # pytest
 .pytest_cache/
 
-# Production data (large files - upload separately)
-experiments/
-
-# Generated artifacts
-vital_param_inventory.json
-
-# General
-*.wav
-*.h5
-
 # Hypothesis (property-based testing cache)
 .hypothesis/
 
 # Kiro IDE
 .kiro/
 
-# Tests
-tests/
+# ============================================
+# 实验数据（大文件，不上传 git）
+# ============================================
 
-# Debug / one-off scripts
+# 实验输出目录（WAV/预设/checkpoint/HDF5）
+experiments/adaptive_200k/
+experiments/expansion_200k/
+experiments/expansion_300k/
+experiments/production_run/
+experiments/pilot_preset_corpus/
+# 保留 .gitkeep
+!experiments/.gitkeep
+
+# 音频文件（任何位置）
+*.wav
+
+# HDF5 数据集
+*.h5
+*.npz
+
+# 研究实验输出
+research/adaptive_render/output/
+research/adaptive_render/__pycache__/
+
+# ============================================
+# 生成的工件
+# ============================================
+vital_param_inventory.json
+wavetable_catalog.json
+
+# ============================================
+# 调试/一次性脚本
+# ============================================
 scripts/debug_render_test.py
 scripts/test_which_params_set.py
 scripts/resume_from_validation.py
 scripts/resume_from_embedding.py
+
+# ============================================
+# 临时文件
+# ============================================
+研究文档.md
+Banana Wob.vital

@@ -1,0 +1,48 @@
+# 小规模自适应渲染测试配置（50 preset × 6 条件 = 300 样本）
+
+base_config: "configs/default.yaml"
+
+production:
+  target_samples: 300
+  filter_margin: 0.02
+  n_presets: 51  # ceil(300 / 6 / (1 - 0.02))
+
+sampling:
+  strategy: "lhs_stratified"
+  seed: 99999
+
+multi_condition:
+  conditions:
+    - {note: 48, velocity: 80,  duration_sec: 2.0, label: "C3_v80"}
+    - {note: 48, velocity: 120, duration_sec: 2.0, label: "C3_v120"}
+    - {note: 60, velocity: 80,  duration_sec: 2.0, label: "C4_v80"}
+    - {note: 60, velocity: 120, duration_sec: 2.0, label: "C4_v120"}
+    - {note: 72, velocity: 80,  duration_sec: 2.0, label: "C5_v80"}
+    - {note: 72, velocity: 120, duration_sec: 2.0, label: "C5_v120"}
+
+adaptive_rendering:
+  enabled: true
+  sustain_margin: 0.2
+  tail_margin: 0.1
+  target_length_sec: null  # 不统一长度，观察自适应效果
+  max_duration_sec: 30.0
+
+parallel:
+  n_workers: 4
+  embedding_batch_size: 32
+  embedding_device: "mps"
+  checkpoint_interval: 50
+
+preprocessing:
+  silence_threshold_db: -60.0
+  clipping_threshold: 0.99
+  clipping_ratio_limit: 0.10
+  target_peak_db: -1.0
+  target_sample_rate: 16000
+  tail_silence_threshold_db: -50.0
+  min_duration_sec: 0.5
+
+quality:
+  spectral_entropy_threshold: 0.05
+  near_duplicate_threshold: 0.999
+  pca_collapse_threshold: 0.95
